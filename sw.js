@@ -1,4 +1,4 @@
-const C = 'aligned-v5';
+const C = 'aligned-v6';
 const ASSETS = ['./', 'index.html', 'style.css', 'data.js', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 // Each file is cached on its own, so one missing file can never break the install.
 self.addEventListener('install', e => { e.waitUntil(caches.open(C).then(c => Promise.all(ASSETS.map(a => c.add(a).catch(() => {}))))); self.skipWaiting(); });

@@ -98,7 +98,7 @@
   const isFile = u => /\.(mp4|webm|mov)(\?.*)?$/i.test(u || '');
   const embed = u => { const m = (u || '').match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/); return m ? 'https://www.youtube.com/embed/' + m[1] : ''; };
   const vname = u => ((u || '').match(/([^\/]+)\.(?:mp4|webm|mov)/i) || [])[1] || '';
-  const posterOf = u => (isFile(u) && /^videos\//.test(u)) ? 'thumbs/' + vname(u) + '.jpg' : '';
+  const posterOf = u => (isFile(u) && /^videos\//i.test(u)) ? 'thumbs/' + vname(u) + '.jpg' : '';
   const fmt = s => Math.floor(s / 60) + ':' + pad(Math.round(s) % 60);
   const durOf = u => { const s = (window.VMETA || {})[vname(u)]; return s ? fmt(s) : ''; };
   const target = it => it.secs ? (it.secs >= 120 ? Math.round(it.secs / 60) + ' min' : it.secs + ' s') : it.reps + ' reps';
@@ -169,7 +169,7 @@
   const probeOk = p => p.status >= 200 && p.status < 300 && /video|octet-stream/i.test(p.ct);
   function whyText(src, p) {
     if (!p.status) return 'The server could not be reached. Check your internet connection.';
-    if (p.status === 404 || (p.status < 300 && /html/i.test(p.ct))) return 'The file ' + src + ' is not on the website. Upload the videos folder to GitHub, next to index.html.';
+    if (p.status === 404 || (p.status < 300 && /html/i.test(p.ct))) return 'The file ' + src + ' is not on the website. Upload the Videos folder to GitHub, next to index.html.';
     if (p.status === 401 || p.status === 403) return 'The server refused the file (error ' + p.status + '). Check the Vercel deployment protection settings.';
     if (probeOk(p)) return 'The file is there, but this browser could not play it. Try opening it directly.';
     return 'Unexpected answer from the server (error ' + p.status + ').';
