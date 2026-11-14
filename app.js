@@ -17,9 +17,13 @@
 
   const done = () => store.get('done', {});
   const videos = () => store.get('videos', {});
+  const images = () => store.get('images', {});
+  const imgOf = id => images()[id] || EX[id].image || '';
   const settings = () => Object.assign({ on: false, time: '08:00', nudgeOn: true, nudge: '19:30' }, store.get('settings', {}));
-  const vidOf = id => videos()[id] || EX[id].video || '';
+  const listOf = id => EX[id].videos || (EX[id].video ? [EX[id].video] : []);
+  const vidOf = id => videos()[id] || listOf(id)[0] || '';
   const embed = u => { const m = (u || '').match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/); return m ? 'https://www.youtube.com/embed/' + m[1] : ''; };
+  const isFile = u => /\.(mp4|webm|mov)(\?.*)?$/i.test(u || '');
   const fmt = s => Math.floor(s / 60) + ':' + pad(s % 60);
   const target = it => it.secs ? it.secs + ' s' : it.reps + ' reps';
 
@@ -46,12 +50,32 @@
     const L = (a, b) => p[a] && p[b] ? `<line x1="${p[a][0]}" y1="${p[a][1]}" x2="${p[b][0]}" y2="${p[b][1]}"/>` : '';
     return `<svg viewBox="0 0 100 100" aria-hidden="true"><line class="fl" x1="2" y1="91" x2="98" y2="91"/><g class="st">${L('h', 'n')}${L('n', 'p')}${L('p', 'k')}${L('k', 'f')}${L('p', 'k2')}${L('k2', 'f2')}${L('n', 'e')}${L('e', 'w')}</g><circle class="hd" cx="${p.h[0]}" cy="${p.h[1]}" r="7"/></svg>`;
   }
-  const pair = ex => `<div class="pair">${fig(ex.a)}<em>→</em>${fig(ex.b)}</div>`;
+  const pair = ex => imgOf(ex.id) ? `<div class="pair img"><img src="${esc(imgOf(ex.id))}" alt="${esc(ex.name)}"></div>` : `<div class="pair">${fig(ex.a)}<em>→</em>${fig(ex.b)}</div>`;
+  const thumb = ex => imgOf(ex.id) ? `<img src="${esc(imgOf(ex.id))}" alt="">` : fig(ex.b);
+  function imageBox(id) {
+    const own = !!images()[id];
+    return `<div class="row"><label class="btn alt" style="cursor:pointer">📷 ${imgOf(id) ? 'Change image' : 'Add your image'}<input type="file" accept="image/*" data-img="${id}" hidden></label>${own ? `<button class="btn ghost" data-act="rmimg" data-id="${id}">Remove</button>` : ''}</div><p class="muted" style="margin:8px 0 0">Your image replaces the drawing. It stays on this device.</p>`;
+  }
+  function saveImage(id, file) {
+    const r = new FileReader();
+    r.onload = () => {
+      const im = new Image();
+      im.onload = () => {
+        const sc = Math.min(1, 800 / Math.max(im.width, im.height)), c = document.createElement('canvas');
+        c.width = Math.round(im.width * sc); c.height = Math.round(im.height * sc);
+        c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+        const m = images(); m[id] = c.toDataURL('image/jpeg', 0.8); store.set('images', m); render();
+      };
+      im.src = r.result;
+    };
+    r.readAsDataURL(file);
+  }
 
   function videoBox(id) {
     const u = vidOf(id), e = embed(u), ex = EX[id];
-    return `<div class="vid">${e ? `<iframe src="${e}" allowfullscreen loading="lazy"></iframe>` : (u ? `<a class="btn alt" href="${esc(u)}" target="_blank" rel="noopener">Open video</a>` : '<p class="muted">No video yet. Find one, then paste its link below.</p>')}
-      <a class="btn ghost" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=${encodeURIComponent(ex.search)}">🔎 Search a video on YouTube</a>
+    const skip = videos()[id] ? 0 : 1, more = listOf(id).slice(skip).map((x, i) => `<details><summary>🎬 More video ${i + 1}</summary>${isFile(x) ? `<video controls playsinline preload="metadata" src="${esc(x)}"></video>` : `<a class="btn alt" href="${esc(x)}" target="_blank" rel="noopener">Open video</a>`}</details>`).join('');
+    return `<div class="vid">${isFile(u) ? `<video controls playsinline preload="metadata" src="${esc(u)}"></video>` : e ? `<iframe src="${e}" allowfullscreen loading="lazy"></iframe>` : (u ? `<a class="btn alt" href="${esc(u)}" target="_blank" rel="noopener">Open video</a>` : '<p class="muted">No video yet. Find one, then paste its link below.</p>')}
+      ${more}<a class="btn ghost" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=${encodeURIComponent(ex.search)}">🔎 Search a video on YouTube</a>
       <div class="row"><input type="url" id="vurl" placeholder="Paste video link" value="${esc(u)}"><button class="btn" style="flex:none;width:auto" data-act="savevid" data-id="${id}">Save</button></div></div>`;
   }
 
@@ -82,7 +106,7 @@
       let h = `<button class="btn ghost" data-act="back">← Week</button><div class="card"><h2 style="margin:0">${DAYN[d]} · ${p.title}</h2><p class="muted">${p.focus}</p>${sessionButtons(d)}</div>`;
       ['warm-up', 'main', 'cool-down'].forEach(b => {
         const l = items.filter(i => i.block === b); if (!l.length) return;
-        h += `<h2>${b[0].toUpperCase() + b.slice(1)}</h2><div class="card" style="padding:4px 16px">` + l.map(i => `<div class="item" data-act="ex" data-id="${i.ex.id}"><div class="th">${fig(i.ex.b)}</div><div class="t"><b>${esc(i.ex.name)}</b><span class="muted">${i.sets} × ${target(i)}</span></div></div>`).join('') + '</div>';
+        h += `<h2>${b[0].toUpperCase() + b.slice(1)}</h2><div class="card" style="padding:4px 16px">` + l.map(i => `<div class="item" data-act="ex" data-id="${i.ex.id}"><div class="th">${thumb(i.ex)}</div><div class="t"><b>${esc(i.ex.name)}</b><span class="muted">${i.sets} × ${target(i)}</span></div></div>`).join('') + '</div>';
       });
       return h;
     }
@@ -93,9 +117,9 @@
   function vEx() {
     if (sub && sub.ex) {
       const ex = EX[sub.ex];
-      return `<button class="btn ghost" data-act="back">← Back</button><div class="card"><span class="chip">${ex.area} · ${ex.level}</span><h2 style="margin:8px 0 0">${esc(ex.name)}</h2>${pair(ex)}<ul class="cues">${ex.cues.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div><div class="card"><h3>Video</h3>${videoBox(ex.id)}</div>`;
+      return `<button class="btn ghost" data-act="back">← Back</button><div class="card"><span class="chip">${ex.area} · ${ex.level}</span><h2 style="margin:8px 0 0">${esc(ex.name)}</h2>${pair(ex)}${imageBox(ex.id)}<ul class="cues">${ex.cues.map(c => `<li>${esc(c)}</li>`).join('')}</ul></div><div class="card"><h3>Video</h3>${videoBox(ex.id)}</div>`;
     }
-    return '<h2 style="margin-top:6px">Exercises</h2><p class="muted">Tap an exercise to see the illustration and add your own video link.</p><div class="card" style="padding:4px 16px">' + EXERCISES.map(e => `<div class="item" data-act="ex" data-id="${e.id}"><div class="th">${fig(e.b)}</div><div class="t"><b>${esc(e.name)}</b><span class="muted">${e.area}${vidOf(e.id) ? ' · 🎬' : ''}</span></div></div>`).join('') + '</div>';
+    return '<h2 style="margin-top:6px">Exercises</h2><p class="muted">Tap an exercise to see the illustration and add your own video link.</p><div class="card" style="padding:4px 16px">' + EXERCISES.map(e => `<div class="item" data-act="ex" data-id="${e.id}"><div class="th">${thumb(e)}</div><div class="t"><b>${esc(e.name)}</b><span class="muted">${e.area}${vidOf(e.id) ? ' · 🎬' : ''}</span></div></div>`).join('') + '</div>';
   }
   function vProgress() {
     const dn = done(), total = Object.keys(dn).length; let g = '<div class="grid28">';
@@ -213,11 +237,13 @@
     else if (a === 'skip') nextEx(1);
     else if (a === 'prev') nextEx(-1);
     else if (a === 'savevid') { const v = videos(); const u = ($('#vurl').value || '').trim(); if (u) v[b.dataset.id] = u; else delete v[b.dataset.id]; store.set('videos', v); S ? player() : render(); }
+    else if (a === 'rmimg') { const m = images(); delete m[b.dataset.id]; store.set('images', m); render(); }
     else if (a === 'perm') { if ('Notification' in window) Notification.requestPermission().then(render); }
     else if (a === 'test') notify('Aligned', 'Notifications are working.');
     else if (a === 'reset') { if (confirm('Delete all progress on this device?')) { store.set('done', {}); store.set('sent', {}); render(); } }
   });
   document.addEventListener('change', e => {
+    if (e.target.dataset.img) { const f = e.target.files && e.target.files[0]; if (f) saveImage(e.target.dataset.img, f); return; }
     const k = e.target.dataset.set; if (!k) return;
     const s = settings(); s[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; store.set('settings', s);
   });
