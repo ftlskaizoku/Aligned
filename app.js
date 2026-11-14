@@ -1,18 +1,27 @@
 (function () {
   'use strict';
-  const VERSION = '1.5';
+  const VERSION = '1.6';
   const $ = s => document.querySelector(s);
   const pad = n => String(n).padStart(2, '0');
   const key = (d = new Date()) => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
 
   /* ------------------------------------------------------------------
      STORAGE – every read/write goes through this one object.
-     Today it uses the device (localStorage). To move to Firebase later,
-     only this object needs to change (read from the cloud, write to it).
+     Data always lives on the device (localStorage). When the person is
+     signed in, each change is also queued for the cloud (see SYNC below).
   ------------------------------------------------------------------- */
+  const NOSYNC = new Set(['ts', 'dirty', 'mode', 'owner', 'sent', 'installed', 'hideInstall', 'images']); // stays on this device
+  const rawGet = (k, d) => { try { const v = localStorage.getItem('al_' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } };
+  const rawSet = (k, v) => { try { localStorage.setItem('al_' + k, JSON.stringify(v)); } catch (e) {} };
+  const acct = { uid: null, email: '', name: '', ready: false, status: 'off', syncedAt: 0 };
   const store = {
-    get(k, d) { try { const v = localStorage.getItem('al_' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
-    set(k, v) { try { localStorage.setItem('al_' + k, JSON.stringify(v)); } catch (e) {} }
+    get: rawGet,
+    set(k, v) {
+      rawSet(k, v);
+      if (NOSYNC.has(k)) return;
+      const ts = rawGet('ts', {}); ts[k] = Date.now(); rawSet('ts', ts);
+      if (acct.uid) queuePush(k);
+    }
   };
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const EX = Object.fromEntries(EXERCISES.map(e => [e.id, e]));
@@ -61,7 +70,9 @@
     up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
     down: '<path d="M12 5v14M6 13l6 6 6-6"/>',
     heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
-    list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>'
+    list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4.200 4-6 8-6s7 1.800 8 6"/>',
+    cloud: '<path d="M7 18a4.500 4.500 0 0 1-.5-9A6 6 0 0 1 18 9.500 4 4 0 0 1 17.500 18z"/>'
   };
   const icon = (n, c = '') => `<svg class="ic ${c}" viewBox="0 0 24 24" aria-hidden="true">${IC[n] || ''}</svg>`;
 
@@ -351,7 +362,7 @@
   }
   function exportData() {
     const data = {};
-    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('al_') === 0 && k !== 'al_sent') { try { data[k.slice(3)] = JSON.parse(localStorage.getItem(k)); } catch (e) {} } }
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('al_') === 0 && ['al_sent', 'al_ts', 'al_dirty', 'al_mode', 'al_owner'].indexOf(k) < 0) { try { data[k.slice(3)] = JSON.parse(localStorage.getItem(k)); } catch (e) {} } }
     const blob = new Blob([JSON.stringify({ app: 'aligned', version: VERSION, exported: new Date().toISOString(), data }, null, 1)], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'aligned-backup-' + key() + '.json';
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 3000);
@@ -370,8 +381,9 @@
 
   /* ---------- views ---------- */
   function sessionButtons(d) {
-    return `<button class="btn" data-act="start" data-d="${d}" data-m="full">${icon('play', 'fill')} Start session · ~${minutes(session(d, 'full'))} min</button>
-      <button class="btn glass soft" data-act="start" data-d="${d}" data-m="express">${icon('zap')} Express version · ~${minutes(session(d, 'express'))} min</button>`;
+    const full = `<button class="btn${profile().mode === 'express' ? ' glass soft' : ''}" data-act="start" data-d="${d}" data-m="full">${icon('play', 'fill')} Start session · ~${minutes(session(d, 'full'))} min</button>`;
+    const exp = `<button class="btn${profile().mode === 'express' ? '' : ' glass soft'}" data-act="start" data-d="${d}" data-m="express">${icon('zap')} Express version · ~${minutes(session(d, 'express'))} min</button>`;
+    return profile().mode === 'express' ? exp + full : full + exp;
   }
   function vToday() {
     const now = new Date(), d = now.getDay(), p = PLAN[d], items = session(d, 'full'), dn = done()[key()], si = streakInfo(), wc = weekCount();
@@ -379,9 +391,9 @@
     const strip = weekDays().map(x => `<div class="day-pill${done()[key(x)] ? ' on' : ''}${key(x) === key() ? ' now' : ''}">${DAY3[x.getDay()]}<span class="dot">${icon('check')}</span><b>${x.getDate()}</b></div>`).join('');
     const disc = store.get('ack', false) ? '' : `<div class="card warn rise"><h3>${icon('shield')} Before you start</h3><p style="margin:8px 0 14px">These exercises are general guidance, not medical advice. Stop if you feel pain, and see a professional for persistent issues or an injury.</p><button class="btn" data-act="ack">Got it</button></div>`;
     const inst = showInstall() && !store.get('hideInstall', false) ? `<div class="card install rise"><div class="bub">${icon('download')}</div><div class="t"><b>Install Aligned</b><span class="muted">Add it to your home screen</span></div><button class="btn sm" data-act="install">Install</button><button class="x" data-act="hideinstall" aria-label="Dismiss">${icon('x')}</button></div>` : '';
-    return `${disc}
-      <div class="rise" style="padding:6px 4px 2px"><span class="muted">${DAYN[d]}, ${now.getDate()} ${now.toLocaleString('en', { month: 'long' })}</span><h2 style="font-size:1.6rem">${greet}</h2></div>
-      <section class="card hero rise"><div class="hero-top"><div><span class="pill light">${esc(p.title)}</span><h2>${esc(p.focus)}</h2><p>Warm-up, main work and cool-down</p></div>${ring(Math.min(1, wc / 5), 66, 7, `<b>${wc}</b><small>/5</small>`)}</div>
+    return `${disc}${flagCard()}${cautionCard(d)}
+      <div class="rise" style="padding:6px 4px 2px"><span class="muted">${DAYN[d]}, ${now.getDate()} ${now.toLocaleString('en', { month: 'long' })}</span><h2 style="font-size:1.6rem">${greet}${firstName() ? ', ' + esc(firstName()) : ''}</h2></div>
+      <section class="card hero rise"><div class="hero-top"><div><span class="pill light">${esc(p.title)}</span>${focusMatch(d) ? ' <span class="pill light">' + icon('target') + ' Your focus</span>' : ''}<h2>${esc(p.focus)}</h2><p>Warm-up, main work and cool-down</p></div>${ring(Math.min(1, wc / 5), 66, 7, `<b>${wc}</b><small>/5</small>`)}</div>
         <div class="meta"><span>${icon('clock')} ~${minutes(items)} min</span><span>${icon('figure')} ${items.length} exercises</span></div>
         ${dn ? `<div class="donebanner">${icon('check')} Done for today. Nice work!</div>` : ''}${sessionButtons(d)}</section>
       ${inst}
@@ -448,6 +460,7 @@
   function vSettings() {
     const s = settings(), perm = 'Notification' in window ? Notification.permission : 'unsupported', cur = store.get('theme', 'sage');
     return `<div class="sec" style="margin-top:6px"><h2 style="font-size:1.4rem">Settings</h2></div>
+      ${accountCard()}${profileCard()}
       <div class="card rise"><div class="kv">${icon('palette')}<h3>Theme</h3></div><div class="themes">${THEMES.map(t => `<button class="theme${t.id === cur ? ' on' : ''}" data-act="theme" data-t="${t.id}"><div class="sw">${t.sw.map(c => `<i style="background:${c}"></i>`).join('')}</div>${t.name}</button>`).join('')}</div></div>
       <div class="card rise"><div class="kv">${icon('phone')}<h3>Install the app</h3></div>${standalone() ? `<p class="muted" style="margin:0">${icon('check')} Aligned is installed on this device.</p>` : `<p class="muted" style="margin:0 0 12px">Add Aligned to your home screen. It opens full screen and works offline.</p><button class="btn" data-act="install">${icon('download')} Install Aligned</button>`}</div>
       <div class="card rise"><div class="kv">${icon('video')}<h3>Check videos</h3></div><p class="muted" style="margin:0 0 12px">Tests that every video and thumbnail is really on your website.</p><div id="vcheck"></div><button class="btn soft" data-act="vcheck">${icon('search')} Run the check</button></div>
@@ -459,7 +472,7 @@
         <p class="muted">Notifications: <b>${perm}</b>. Reminders fire on weekdays while the app is open or running in the background. Reliable background reminders need a small server, planned for a later version.</p>
         <div class="row"><button class="btn soft" data-act="perm">Allow notifications</button><button class="btn ghost" data-act="test">Send a test</button></div></div>
       <div class="card warn rise"><h3>${icon('shield')} Safety</h3><p style="margin:8px 0 0">General guidance, not medical advice. Stop if you feel pain and see a professional for persistent issues or injuries.</p></div>
-      <div class="card rise"><div class="kv">${icon('download')}<h3>Your data</h3></div><p class="muted" style="margin:0 0 12px">Everything is saved on this device only. Download a backup to keep it safe or to move it to another phone.</p>
+      <div class="card rise"><div class="kv">${icon('download')}<h3>Your data</h3></div><p class="muted" style="margin:0 0 12px">${acct.uid ? 'Your progress is saved on this device and in your account. A backup file is still handy as an extra copy.' : 'Everything is saved on this device only. Download a backup to keep it safe or to move it to another phone.'}</p>
         <div class="row"><button class="btn soft" data-act="export">${icon('download')} Backup</button><label class="btn soft" style="cursor:pointer">${icon('upload')} Restore<input type="file" accept="application/json,.json" data-import="1" hidden></label></div>
         <button class="btn ghost" data-act="reset">${icon('trash')} Reset my progress</button></div>
       <p class="muted" style="text-align:center;margin:18px 0 0">Aligned v${VERSION}</p>`;
@@ -595,6 +608,364 @@
   }
   setInterval(check, 30000); setTimeout(check, 2000);
 
+
+  /* ==================================================================
+     ACCOUNTS, SYNC, LANDING PAGE AND ONBOARDING
+     - The app works without an account (guest mode, data on this device).
+     - With an account, every store key is mirrored to Firebase and merged
+       between devices. cloud.bundle.js is loaded only when it is needed.
+  =================================================================== */
+  const cfgOk = () => !!(window.ALIGNED_FIREBASE && ALIGNED_FIREBASE.apiKey && ALIGNED_FIREBASE.projectId && ALIGNED_FIREBASE.appId);
+  let cloud = null, gate = null, gs = { email: '', name: '', err: '', info: '', busy: false, from: null }, ob = null, flushT = null, retryT = null;
+  const profile = () => store.get('profile', {});
+  const firstName = () => ((profile().name || acct.name || '').trim().split(/\s+/)[0]) || '';
+
+  function loadCloud() {
+    if (!cfgOk()) return Promise.resolve(null);
+    if (cloud) return Promise.resolve(cloud);
+    if (window.AlignedCloud && window.AlignedCloud.configured) return Promise.resolve(cloud = window.AlignedCloud);
+    return new Promise(res => {
+      const s = document.createElement('script'); s.src = 'cloud.bundle.js?v=16';
+      s.onload = () => res(cloud = (window.AlignedCloud && window.AlignedCloud.configured) ? window.AlignedCloud : null);
+      s.onerror = () => res(null);
+      document.head.appendChild(s);
+    });
+  }
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rj) => setTimeout(() => rj({ code: 'app/timeout' }), ms))]);
+
+  /* ---------- sync engine ---------- */
+  const localKeys = () => { const out = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('al_') === 0 && !NOSYNC.has(k.slice(3))) out.push(k.slice(3)); } return out; };
+  function wipeLocal() {
+    const keep = new Set(['al_theme', 'al_installed', 'al_hideInstall']), rm = [];
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('al_') === 0 && !keep.has(k)) rm.push(k); }
+    rm.forEach(k => localStorage.removeItem(k));
+  }
+  const dayEnd = k => new Date(k + 'T23:59:59').getTime();
+  function mergeKey(k, lv, rv, reset) {
+    if (k === 'logs') { const m = new Map(); [].concat(lv || [], rv || []).forEach(x => { if (x && x.at > reset && !m.has(x.id)) m.set(x.id, x); }); return [...m.values()].sort((a, b) => a.at - b.at); }
+    if (k === 'checkins') { const m = new Map(); [].concat(lv || [], rv || []).forEach(x => { if (x && x.at > reset) { const o = m.get(x.date); if (!o || x.at > o.at) m.set(x.date, x); } }); return [...m.values()].sort((a, b) => a.date < b.date ? -1 : 1); }
+    if (k === 'done') { const o = {}; [rv || {}, lv || {}].forEach(src => Object.keys(src).forEach(d => { if (dayEnd(d) > reset && !o[d]) o[d] = src[d]; })); return o; }
+    return undefined;
+  }
+  const UNION = new Set(['logs', 'checkins', 'done']);
+  // Apply documents received from the cloud. `full` = complete snapshot (also uploads local-only keys).
+  function applyRemote(map, full) {
+    const ts = rawGet('ts', {}), dirty = new Set(rawGet('dirty', []));
+    let changed = false;
+    if (map.resetAt) { let r = 0; try { r = +JSON.parse(map.resetAt.v) || 0; } catch (e) {} if (r > rawGet('resetAt', 0)) { rawSet('resetAt', r); ts.resetAt = Math.max(ts.resetAt || 0, map.resetAt.t); } }
+    const reset = rawGet('resetAt', 0);
+    const keys = new Set(Object.keys(map)); if (full) localKeys().forEach(k => keys.add(k));
+    keys.forEach(k => {
+      if (NOSYNC.has(k) || k === 'resetAt') return;
+      const r = map[k], has = localStorage.getItem('al_' + k) !== null, lt = ts[k] || 0;
+      if (!r) { if (has) dirty.add(k); return; }
+      let rv; try { rv = JSON.parse(r.v); } catch (e) { return; }
+      if (!has) { rawSet(k, rv); ts[k] = r.t; changed = true; return; }
+      const lv = rawGet(k), ls = JSON.stringify(lv), rs = JSON.stringify(rv);
+      if (UNION.has(k)) {
+        const m = mergeKey(k, lv, rv, reset), ms = JSON.stringify(m);
+        if (ms !== ls) { rawSet(k, m); changed = true; }
+        if (ms !== rs) { ts[k] = Date.now(); dirty.add(k); } else ts[k] = Math.max(lt, r.t);
+      } else if (ls !== rs) {
+        if (r.t >= lt) { rawSet(k, rv); ts[k] = r.t; changed = true; } else dirty.add(k);
+      } else ts[k] = Math.max(lt, r.t);
+    });
+    rawSet('ts', ts); rawSet('dirty', [...dirty]);
+    if (changed) { applyTheme(); if (!gate && !S) render(true); }
+    paintSync();
+  }
+  function queuePush(k) {
+    const d = new Set(rawGet('dirty', [])); d.add(k); rawSet('dirty', [...d]);
+    clearTimeout(flushT); flushT = setTimeout(flush, 900);
+  }
+  async function flush() {
+    if (!acct.uid || !acct.ready || !cloud) return;
+    const ts = rawGet('ts', {});
+    const list = rawGet('dirty', []); if (!list.length) { acct.status = 'ok'; paintSync(); return; }
+    acct.status = 'syncing'; paintSync();
+    try {
+      for (const k of list) {
+        const t = ts[k] || Date.now();
+        await withTimeout(cloud.push(acct.uid, k, JSON.stringify(rawGet(k, null)), t), 15000);
+        rawSet('dirty', rawGet('dirty', []).filter(x => x !== k));
+      }
+      acct.status = 'ok'; acct.syncedAt = Date.now();
+    } catch (e) { acct.status = 'offline'; scheduleRetry(); }
+    paintSync();
+  }
+  function scheduleRetry() { clearTimeout(retryT); retryT = setTimeout(() => syncNow(true), 20000); }
+  async function syncNow(quiet) {
+    if (!acct.uid || !cloud) return;
+    acct.status = 'syncing'; paintSync();
+    try {
+      applyRemote(await withTimeout(cloud.pullAll(acct.uid), 12000), true);
+      acct.ready = true; acct.status = 'ok'; acct.syncedAt = Date.now();
+      cloud.listen(acct.uid, ch => { const m = {}; ch.forEach(c => { m[c.key] = { v: c.v, t: c.t }; }); applyRemote(m, false); });
+      await flush();
+    } catch (e) { acct.status = 'offline'; scheduleRetry(); if (!quiet) alert('Could not reach your account. Your changes are saved on this device and will sync later.'); }
+    paintSync();
+  }
+  window.addEventListener('online', () => { if (acct.uid) syncNow(true); });
+  function syncLabel() {
+    if (acct.status === 'syncing') return 'Syncing…';
+    if (acct.status === 'offline') return 'Offline. Changes are kept on this device and will sync later.';
+    if (acct.status === 'ok') { const s = Math.round((Date.now() - (acct.syncedAt || Date.now())) / 1000); return s < 60 ? 'Synced just now' : 'Synced ' + Math.round(s / 60) + ' min ago'; }
+    return '';
+  }
+  function paintSync() { const el = $('#syncst'); if (el) el.textContent = syncLabel(); }
+
+  async function onSignedIn(u) {
+    acct.uid = u.uid; acct.email = u.email; acct.name = u.name; acct.ready = false;
+    const owner = rawGet('owner', null);
+    if (owner && owner !== u.uid) wipeLocal();           // another person's data on this device
+    rawSet('owner', u.uid); rawSet('mode', 'account');
+    await syncNow(true);
+  }
+  function endSession() { // forget the account on this device
+    clearTimeout(flushT); clearTimeout(retryT);
+    acct.uid = null; acct.email = ''; acct.name = ''; acct.ready = false; acct.status = 'off';
+    wipeLocal(); try { localStorage.removeItem('al_mode'); localStorage.removeItem('al_owner'); } catch (e) {}
+  }
+
+  /* ---------- friendly auth errors ---------- */
+  const AUTH_ERR = {
+    'auth/invalid-credential': 'Wrong email or password.', 'auth/wrong-password': 'Wrong email or password.', 'auth/user-not-found': 'Wrong email or password.',
+    'auth/email-already-in-use': 'An account with this email already exists. Try signing in instead.',
+    'auth/weak-password': 'Choose a longer password (at least 8 characters).', 'auth/invalid-email': 'That email address does not look right.',
+    'auth/too-many-requests': 'Too many attempts. Wait a few minutes and try again.', 'auth/network-request-failed': 'No connection. Check your internet and try again.',
+    'auth/popup-closed-by-user': 'Google sign-in was closed before it finished.', 'auth/cancelled-popup-request': '',
+    'auth/unauthorized-domain': 'This website is not authorised in Firebase yet. Add it under Authentication, Settings, Authorized domains.',
+    'auth/operation-not-allowed': 'This sign-in method is not turned on in Firebase yet.', 'auth/requires-recent-login': 'For security, sign out, sign in again, then retry.',
+    'app/no-cloud': 'Accounts could not be loaded. Check your connection and try again.', 'app/timeout': 'This is taking too long. Check your connection and try again.'
+  };
+  const authMsg = e => (e && AUTH_ERR[e.code] !== undefined) ? AUTH_ERR[e.code] : 'Something went wrong. Please try again.';
+
+  /* ---------- screens ---------- */
+  const gateEl = $('#gate');
+  function setGate(g, keep) {
+    gate = g; document.body.classList.toggle('gated', !!g);
+    if (!keep) gs.err = gs.info = '';
+    gs.busy = false;
+    if (g) { gateEl.hidden = false; gateEl.innerHTML = gateHTML(); gateEl.scrollTop = 0; window.scrollTo(0, 0); } else { gateEl.hidden = true; gateEl.innerHTML = ''; }
+  }
+  const redraw = () => { gateEl.innerHTML = gateHTML(); };
+  const gBrand = `<div class="brand"><div class="logo">${icon('figure')}</div><div><b>Aligned</b><span>Posture training</span></div></div>`;
+  const GOOGLE = '<span class="gg" aria-hidden="true">G</span>';
+  const busyAttr = () => gs.busy ? ' disabled' : '';
+  const errBox = () => (gs.err ? `<div class="gmsg err" role="alert">${esc(gs.err)}</div>` : '') + (gs.info ? `<div class="gmsg ok" role="status">${esc(gs.info)}</div>` : '');
+  const backLink = () => gs.from === 'app' ? `<button class="btn ghost sm gback" data-g="leave">${icon('prev')} Back to the app</button>` : '';
+
+  function landingHTML() {
+    const acc = cfgOk();
+    const days = [['Mon', 'Pelvis'], ['Tue', 'Pelvis+'], ['Wed', 'Shoulders'], ['Thu', 'Neck'], ['Fri', 'Full body'], ['Sat', 'Mobility']];
+    const feats = [['clock', 'Sessions that fit your day', 'A 30-minute guided session, or a 5 to 10 minute express version for busy days.'],
+      ['video', 'Video lessons built in', 'Every exercise has real demonstrations, with thumbnails, right inside the session.'],
+      ['chart', 'Track what matters', 'Reps, holds, effort and pain for each session, plus a weekly body check-in.'],
+      ['cloud', 'Your progress follows you', acc ? 'Create an account and your history syncs between your phone and computer.' : 'Your history is saved on your device, with backup and restore.']];
+    return `<div class="gwrap">
+      <header class="gtop">${gBrand}${acc ? '<button class="btn ghost sm" data-g="to" data-to="signin">Sign in</button>' : ''}</header>
+      <section class="ghero rise"><span class="pill">${icon('shield')} Gentle, guided, no equipment fuss</span>
+        <h1>Stand taller.<br>One day at a time.</h1>
+        <p>A simple weekly posture plan with one body area each day, real video lessons and progress you can see.</p>
+        <div class="gshots"><img src="thumbs/v06.jpg" alt="" loading="lazy"><img src="thumbs/v11.jpg" alt="" loading="lazy"><img src="thumbs/v17.jpg" alt="" loading="lazy"></div>
+        ${acc ? `<button class="btn" data-g="to" data-to="signup">Create your free account</button><button class="btn soft" data-g="to" data-to="signin">I already have an account</button><button class="glink" data-g="guest">Try it without an account</button>`
+              : `<button class="btn" data-g="guest">Get started</button>`}
+      </section>
+      <section class="card rise"><div class="kv">${icon('calendar')}<h3>Your week at a glance</h3></div><div class="gweek">${days.map(d => `<div><b>${d[0]}</b><span>${d[1]}</span></div>`).join('')}</div></section>
+      <div class="gfeats">${feats.map(f => `<div class="card rise"><div class="bub">${icon(f[0])}</div><b>${f[1]}</b><p class="muted">${f[2]}</p></div>`).join('')}</div>
+      <section class="card rise"><div class="kv">${icon('target')}<h3>How it works</h3></div>
+        <ol class="gsteps"><li><b>Tell us about you.</b> A one-minute setup: your goals, your level and any sore spots.</li><li><b>Follow today’s session.</b> Warm-up, main work and cool-down, guided with timers.</li><li><b>See your progress.</b> Streaks, effort, pain and check-ins show what is changing.</li></ol></section>
+      <div class="card warn rise"><h3>${icon('shield')} Good to know</h3><p style="margin:8px 0 0">Aligned gives general guidance, not medical advice. Stop if something hurts and see a professional for persistent pain or injuries.</p></div>
+      <footer class="gfoot">Aligned v${VERSION}</footer></div>`;
+  }
+  function authHTML(kind) {
+    const up = kind === 'signup';
+    const title = up ? 'Create your account' : kind === 'reset' ? 'Reset your password' : 'Welcome back';
+    const sub = up ? 'Save your progress and use Aligned on any device.' : kind === 'reset' ? 'We will email you a link to choose a new password.' : 'Sign in to pick up where you left off.';
+    const em = `<label class="fld"><span>Email</span><input type="email" id="g-email" autocomplete="email" inputmode="email" autocapitalize="off" spellcheck="false" value="${esc(gs.email)}" required></label>`;
+    let body;
+    if (kind === 'reset') body = `${em}<button class="btn" type="submit"${busyAttr()}>${gs.busy ? 'Sending…' : 'Send reset link'}</button><button type="button" class="glink" data-g="to" data-to="signin">Back to sign in</button>`;
+    else body = `<button type="button" class="btn ghost gbtn" data-g="google"${busyAttr()}>${GOOGLE} Continue with Google</button><div class="gor"><span>or with email</span></div>
+      ${up ? `<label class="fld"><span>Your name</span><input type="text" id="g-name" autocomplete="given-name" value="${esc(gs.name)}"></label>` : ''}${em}
+      <label class="fld"><span>Password${up ? ' (8 characters or more)' : ''}</span><input type="password" id="g-pw" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="${up ? 8 : 1}" required></label>
+      <button class="btn" type="submit"${busyAttr()}>${gs.busy ? 'Please wait…' : up ? 'Create account' : 'Sign in'}</button>
+      ${up ? '' : '<button type="button" class="glink" data-g="to" data-to="reset">Forgot your password?</button>'}
+      <button type="button" class="glink" data-g="to" data-to="${up ? 'signin' : 'signup'}">${up ? 'I already have an account' : 'New here? Create an account'}</button>`;
+    return `<div class="gwrap narrow"><header class="gtop">${gBrand}</header>${backLink()}
+      <div class="card rise gcard"><h1 class="gh">${title}</h1><p class="muted" style="margin:6px 0 16px">${sub}</p>${errBox()}
+        <form data-gform="${kind}" novalidate>${body}</form></div>
+      ${gs.from === 'app' ? '' : '<button class="glink" data-g="guest">Continue without an account</button>'}
+      ${up ? `<p class="muted gnote">${icon('shield')} Your progress and any health notes are stored in your private account. Only you can read them.</p>` : ''}</div>`;
+  }
+  const GOALS = [['neck', 'Neck & upper back'], ['shoulders', 'Shoulders & chest'], ['pelvis', 'Pelvis & lower back'], ['posture', 'Overall posture']];
+  const SORE = [['neck', 'Neck'], ['shoulders', 'Shoulders'], ['back', 'Back'], ['hips', 'Hips & pelvis']];
+  const LEVELS = [['new', 'New to this', 'I rarely do posture or mobility work.'], ['some', 'Some experience', 'I exercise now and then.'], ['regular', 'Regular', 'I train most weeks.']];
+  const MODES = [['full', 'Full session', 'About 30 minutes, the complete plan.'], ['express', 'Express first', 'About 5 to 10 minutes. Full session whenever I have time.']];
+  const OB_STEPS = 5;
+  function obHTML() {
+    const chip = (arr, id, label, grp) => `<button type="button" class="opt${arr.includes(id) ? ' on' : ''}" data-g="tog" data-grp="${grp}" data-id="${id}">${icon('check')}${label}</button>`;
+    const pick = (cur, id, t, d, grp) => `<button type="button" class="pick${cur === id ? ' on' : ''}" data-g="set" data-grp="${grp}" data-id="${id}"><b>${t}</b><span class="muted">${d}</span></button>`;
+    let h, ok = true;
+    if (ob.step === 0) h = `<h1 class="gh">Welcome${firstName() ? ', ' + esc(firstName()) : ''}</h1><p class="muted">Let’s set up Aligned in about a minute. What should we call you?</p><label class="fld"><span>Your first name</span><input type="text" id="ob-name" autocomplete="given-name" value="${esc(ob.name)}" maxlength="40"></label>`;
+    else if (ob.step === 1) { h = `<h1 class="gh">What would you like to work on?</h1><p class="muted">Pick everything that applies. Your plan stays the same, but we will highlight the days that match.</p><div class="opts">${GOALS.map(g => chip(ob.goals, g[0], g[1], 'goals')).join('')}</div>`; ok = ob.goals.length > 0; }
+    else if (ob.step === 2) h = `<h1 class="gh">How experienced are you?</h1><div class="picks">${LEVELS.map(l => pick(ob.level, l[0], l[1], l[2], 'level')).join('')}</div><h3 style="margin:18px 0 8px">How do you prefer to train?</h3><div class="picks">${MODES.map(l => pick(ob.mode, l[0], l[1], l[2], 'mode')).join('')}</div>`;
+    else if (ob.step === 3) { h = `<h1 class="gh">A quick safety check</h1><p class="muted">Does any area feel sore or tight right now?</p><div class="opts">${SORE.map(g => chip(ob.sore, g[0], g[1], 'sore')).join('')}</div>
+      <label class="chk"><input type="checkbox" id="ob-red" ${ob.red ? 'checked' : ''}><span>I have numbness or tingling, a recent injury or surgery, or a diagnosed spine or joint condition.</span></label>
+      ${ob.red ? `<div class="gmsg warn">${icon('shield')} Please check with a doctor or physiotherapist before starting. You can still look around the app.</div>` : ''}
+      <label class="chk"><input type="checkbox" id="ob-ack" ${ob.ack ? 'checked' : ''}><span>I understand these exercises are general guidance, not medical advice, and I will stop if something hurts.</span></label>`; ok = ob.ack; }
+    else h = `<h1 class="gh">Last step</h1><p class="muted">Choose a look, and decide if you want a daily reminder.</p><div class="themes">${THEMES.map(t => `<button type="button" class="theme${t.id === store.get('theme', 'sage') ? ' on' : ''}" data-g="theme" data-t="${t.id}"><div class="sw">${t.sw.map(c => `<i style="background:${c}"></i>`).join('')}</div>${t.name}</button>`).join('')}</div>
+      <label class="set" style="margin-top:14px"><span>Daily reminder</span><input class="sw" type="checkbox" id="ob-on" ${ob.on ? 'checked' : ''}></label>${ob.on ? `<label class="set"><span>Time</span><input type="time" id="ob-time" value="${esc(ob.time)}"></label>` : ''}`;
+    const last = ob.step === OB_STEPS - 1;
+    return `<div class="gwrap narrow"><header class="gtop">${gBrand}${gs.from === 'app' ? '<button class="btn ghost sm" data-g="leave">Close</button>' : ''}</header>
+      <div class="obbar" aria-hidden="true">${Array.from({ length: OB_STEPS }, (_, i) => `<i class="${i <= ob.step ? 'on' : ''}"></i>`).join('')}</div>
+      <div class="card rise gcard">${h}</div>
+      <div class="row obnav">${ob.step > 0 ? `<button class="btn ghost" data-g="obback">Back</button>` : ''}<button class="btn" data-g="obnext"${ok ? '' : ' disabled'}>${last ? 'Start training' : 'Continue'}</button></div></div>`;
+  }
+  function splashHTML() { return `<div class="gsplash">${gBrand}<div class="spin" aria-label="Loading"></div></div>`; }
+  function gateHTML() { return gate === 'landing' ? landingHTML() : gate === 'onboard' ? obHTML() : gate === 'splash' ? splashHTML() : authHTML(gate); }
+
+  /* ---------- flow ---------- */
+  function startOnboarding() {
+    const p = profile(), s = settings();
+    ob = { step: 0, name: p.name || acct.name || '', goals: (p.goals || []).slice(), level: p.level || 'new', mode: p.mode || 'full', sore: (p.sore || []).slice(), red: !!p.red, ack: !!store.get('ack', false), on: s.on, time: s.time };
+    setGate('onboard', true);
+  }
+  function enterApp() {
+    if (!profile().onboarded) { startOnboarding(); return; }
+    setGate(null); render();
+    if (acct.uid && !S) requestAnimationFrame(paintSync);
+  }
+  function finishOnboarding() {
+    const old = profile();
+    store.set('profile', Object.assign({}, old, { name: ob.name.trim(), goals: ob.goals, level: ob.level, mode: ob.mode, sore: ob.sore, red: ob.red, onboarded: true, doneAt: old.doneAt || Date.now() }));
+    store.set('ack', true);
+    if (!ob.red) store.set('flagAck', false);
+    const s = settings(); s.on = ob.on; s.time = ob.time || s.time; store.set('settings', s);
+    if (ob.on && 'Notification' in window && Notification.permission === 'default') { try { Notification.requestPermission(); } catch (e) {} }
+    tab = 'today'; sub = null; gs.from = null; setGate(null); render();
+  }
+  async function submitAuth(kind) {
+    const email = (($('#g-email') || {}).value || '').trim(), pw = ($('#g-pw') || {}).value || '', name = (($('#g-name') || {}).value || '').trim();
+    gs.email = email; gs.name = name;
+    if (!/^\S+@\S+\.\S+$/.test(email)) { gs.err = AUTH_ERR['auth/invalid-email']; redraw(); return; }
+    if (kind !== 'reset' && !pw) { gs.err = 'Enter your password.'; redraw(); return; }
+    if (kind === 'signup' && pw.length < 8) { gs.err = AUTH_ERR['auth/weak-password']; redraw(); return; }
+    gs.err = gs.info = ''; gs.busy = true; redraw();
+    try {
+      const c = await loadCloud(); if (!c) throw { code: 'app/no-cloud' };
+      if (kind === 'reset') { await withTimeout(c.reset(email), 15000); gs.busy = false; gs.info = 'If an account exists for this email, a reset link is on its way.'; redraw(); return; }
+      const u = kind === 'signup' ? await withTimeout(c.signUp(email, pw, name), 20000) : await withTimeout(c.signIn(email, pw), 20000);
+      await finishSignIn(u);
+    } catch (e) { gs.busy = false; gs.err = authMsg(e); redraw(); }
+  }
+  async function finishSignIn(u) {
+    await onSignedIn(u);
+    if (!profile().name && (u.name || gs.name)) { const p = profile(); p.name = u.name || gs.name; store.set('profile', p); }
+    gs.from = null; enterApp();
+  }
+  async function googleAuth() {
+    gs.err = gs.info = ''; gs.busy = true; redraw();
+    try {
+      const c = await loadCloud(); if (!c) throw { code: 'app/no-cloud' };
+      const u = await c.google(); if (!u) return;   // redirect flow: the page will reload
+      await finishSignIn(u);
+    } catch (e) { gs.busy = false; gs.err = authMsg(e); redraw(); }
+  }
+
+  /* ---------- events for the gate and the account cards ---------- */
+  document.addEventListener('submit', e => { const f = e.target.closest('[data-gform]'); if (f) { e.preventDefault(); if (!gs.busy) submitAuth(f.dataset.gform); } });
+  document.addEventListener('input', e => {
+    const t = e.target;
+    if (t.id === 'g-email') gs.email = t.value; else if (t.id === 'g-name') gs.name = t.value;
+    else if (t.id === 'ob-name' && ob) ob.name = t.value; else if (t.id === 'ob-time' && ob) ob.time = t.value;
+  });
+  document.addEventListener('change', e => {
+    const t = e.target; if (!ob || gate !== 'onboard') return;
+    if (t.id === 'ob-red') { ob.red = t.checked; redraw(); } else if (t.id === 'ob-ack') { ob.ack = t.checked; redraw(); } else if (t.id === 'ob-on') { ob.on = t.checked; redraw(); }
+  });
+  document.addEventListener('click', async e => {
+    const b = e.target.closest('[data-g]'); if (!b) return;
+    const g = b.dataset.g;
+    if (g === 'to') { setGate(b.dataset.to); }
+    else if (g === 'guest') { rawSet('mode', 'guest'); gs.from = null; enterApp(); }
+    else if (g === 'google') googleAuth();
+    else if (g === 'leave') { gs.from = null; setGate(null); render(); }
+    else if (g === 'tog') { const a = ob[b.dataset.grp], i = a.indexOf(b.dataset.id); i < 0 ? a.push(b.dataset.id) : a.splice(i, 1); redraw(); }
+    else if (g === 'set') { ob[b.dataset.grp] = b.dataset.id; redraw(); }
+    else if (g === 'theme') { store.set('theme', b.dataset.t); applyTheme(); redraw(); }
+    else if (g === 'obnext') { if (ob.step === OB_STEPS - 1) finishOnboarding(); else { ob.step++; redraw(); gateEl.scrollTop = 0; window.scrollTo(0, 0); } }
+    else if (g === 'obback') { ob.step = Math.max(0, ob.step - 1); redraw(); }
+    else if (g === 'account') { gs.from = 'app'; setGate(b.dataset.to || 'signup'); }
+    else if (g === 'profile') { gs.from = 'app'; startOnboarding(); }
+    else if (g === 'syncnow') syncNow(false);
+    else if (g === 'signout') signOutFlow();
+    else if (g === 'delacct') deleteFlow();
+    else if (g === 'flagack') { store.set('flagAck', true); render(true); }
+  });
+  async function signOutFlow() {
+    if (rawGet('dirty', []).length) { await flush(); }
+    const pending = rawGet('dirty', []).length;
+    const msg = pending ? 'Some recent changes have not reached your account yet and will be lost if you sign out now. Sign out anyway?' : 'Sign out? Your progress stays in your account, and this device will be cleared.';
+    if (!confirm(msg)) return;
+    try { cloud && await cloud.signOut(); } catch (e) {}
+    endSession(); gs = { email: '', name: '', err: '', info: '', busy: false, from: null }; tab = 'today'; sub = null; setGate('landing');
+  }
+  async function deleteFlow() {
+    if (!confirm('Delete your account and all of its data permanently? This cannot be undone.')) return;
+    if ((prompt('Type DELETE to confirm.') || '').trim() !== 'DELETE') return;
+    try { await withTimeout(cloud.deleteAccount(acct.uid), 30000); }
+    catch (e) { alert(authMsg(e)); return; }
+    endSession(); gs = { email: '', name: '', err: '', info: '', busy: false, from: null }; tab = 'today'; sub = null; setGate('landing');
+  }
+
+  /* ---------- personalisation helpers used by Today and Settings ---------- */
+  const DAYGOAL = { 1: 'pelvis', 2: 'pelvis', 3: 'shoulders', 4: 'neck', 5: 'posture' };
+  const SOREDAYS = { neck: [4, 5], shoulders: [3, 5], back: [1, 2, 3, 4, 5], hips: [1, 2, 5] };
+  const focusMatch = d => { const g = profile().goals || []; return !!DAYGOAL[d] && (g.includes(DAYGOAL[d]) || (DAYGOAL[d] === 'posture' && g.length > 0)); };
+  function cautionCard(d) {
+    const s = (profile().sore || []).filter(a => (SOREDAYS[a] || []).includes(d)); if (!s.length) return '';
+    const names = s.map(a => (SORE.find(x => x[0] === a) || [0, a])[1].toLowerCase());
+    return `<div class="card tip rise"><div class="bub">${icon('heart')}</div><div><b>Go gently today</b><p>You said your ${names.join(' and ')} ${names.length > 1 ? 'feel' : 'feels'} sore. Keep the movements small, try the express version if you like, and stop if anything hurts.</p></div></div>`;
+  }
+  function flagCard() {
+    if (!profile().red || store.get('flagAck', false)) return '';
+    return `<div class="card warn rise"><h3>${icon('shield')} Check with a professional first</h3><p style="margin:8px 0 14px">You told us about numbness, an injury or a diagnosed condition. Please have a doctor or physiotherapist confirm these exercises suit you before you start.</p><button class="btn soft" data-g="flagack">Understood</button></div>`;
+  }
+  function accountCard() {
+    if (acct.uid) return `<div class="card rise"><div class="kv">${icon('user')}<h3>Account</h3></div>
+      <div class="acct"><div class="av">${esc((acct.name || acct.email || '?').trim().charAt(0).toUpperCase())}</div><div class="t"><b>${esc(acct.name || 'Your account')}</b><span class="muted">${esc(acct.email)}</span></div></div>
+      <p class="muted" style="margin:10px 0 12px">${icon('cloud')} <span id="syncst">${esc(syncLabel())}</span></p>
+      <div class="row"><button class="btn soft" data-g="syncnow">Sync now</button><button class="btn ghost" data-g="signout">${icon('x')} Sign out</button></div>
+      <button class="btn ghost danger" data-g="delacct">${icon('trash')} Delete my account</button></div>`;
+    return `<div class="card rise"><div class="kv">${icon('user')}<h3>Account</h3></div>
+      <p class="muted" style="margin:0 0 12px">You are using Aligned without an account, so your data stays on this device.${cfgOk() ? ' Create an account to keep it safe and use Aligned on other devices.' : ' Accounts are not switched on yet. Add your Firebase details to firebase-config.js to enable them.'}</p>
+      ${cfgOk() ? `<div class="row"><button class="btn" data-g="account" data-to="signup">Create account</button><button class="btn ghost" data-g="account" data-to="signin">Sign in</button></div>` : ''}</div>`;
+  }
+  function profileCard() {
+    const p = profile(), lab = (list, ids) => (ids || []).map(i => (list.find(x => x[0] === i) || [0, i])[1]).join(', ') || 'None';
+    return `<div class="card rise"><div class="kv">${icon('target')}<h3>Your profile</h3></div>
+      <div class="kvrow"><span class="muted">Name</span><b>${esc(p.name || 'Not set')}</b></div>
+      <div class="kvrow"><span class="muted">Focus</span><b>${esc(lab(GOALS, p.goals))}</b></div>
+      <div class="kvrow"><span class="muted">Level</span><b>${esc((LEVELS.find(l => l[0] === p.level) || [0, 'Not set'])[1])}</b></div>
+      <div class="kvrow"><span class="muted">Sore areas</span><b>${esc(lab(SORE, p.sore))}</b></div>
+      <button class="btn soft" data-g="profile" style="margin-top:12px">Edit my profile</button></div>`;
+  }
+
+  /* ---------- start ---------- */
+  async function boot() {
+    applyTheme();
+    const mode = rawGet('mode', null);
+    if (!mode) { setGate('landing'); return; }
+    if (mode === 'guest') { enterApp(); return; }
+    // Signed-in before: show the app from local data straight away, then sync.
+    enterApp();
+    const c = await loadCloud();
+    if (!c) { acct.status = 'offline'; return; }
+    let u = null; try { u = await withTimeout(c.init(), 8000); } catch (e) { acct.status = 'offline'; acct.uid = rawGet('owner', null); acct.name = (profile().name || ''); scheduleRetry(); return; }
+    if (!u) { gs.err = 'Your session ended. Please sign in again.'; setGate('signin', true); return; }
+    await onSignedIn(u); if (!gate) render(true);
+  }
+
   /* ---------- events ---------- */
   function refreshVbox(id) {
     const old = document.querySelector('.vbox[data-id="' + id + '"]'); if (!old) return false;
@@ -646,7 +1017,7 @@
     else if (a === 'export') exportData();
     else if (a === 'perm') { if ('Notification' in window) Notification.requestPermission().then(() => render(true)); }
     else if (a === 'test') notify('Aligned', 'Notifications are working.');
-    else if (a === 'reset') { if (confirm('Delete all progress, history and check-ins on this device?')) { ['done', 'sent', 'logs', 'checkins'].forEach(k => store.set(k, k === 'done' || k === 'sent' ? {} : [])); render(true); } }
+    else if (a === 'reset') { if (confirm('Delete all progress, history and check-ins' + (acct.uid ? ' on this device and in your account' : ' on this device') + '?')) { store.set('resetAt', Date.now()); ['done', 'sent', 'logs', 'checkins'].forEach(k => store.set(k, k === 'done' || k === 'sent' ? {} : [])); render(true); } }
   });
   document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('vt') && e.target.dataset.act === 'playvid') { e.preventDefault(); playTile(e.target); } });
   document.addEventListener('input', e => {
@@ -662,8 +1033,7 @@
     const s = settings(); s[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value; store.set('settings', s);
   });
 
-  applyTheme();
-  render();
+  boot();
   if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) navigator.serviceWorker.register('sw.js').catch(() => {});
   window.ALIGNED_VERSION = VERSION;
 })();
