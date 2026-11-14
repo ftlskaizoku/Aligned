@@ -4,7 +4,9 @@
 
    Each exercise:
      id, name, area, level, cues[], search (YouTube search text),
-     video (optional: YouTube link, or a file like 'videos/v09_hipflexor.mp4' placed in the videos folder),
+     videos (list of files like 'videos/v09.mp4'; the first one is the main video).
+            Thumbnails are automatic: thumbs/v09.jpg is used as the picture for videos/v09.mp4.
+     video (optional single YouTube link or file),
      image (optional: URL or file path like 'images/bridge.jpg' – replaces the drawing;
             you can also add images from inside the app on the Exercises tab),
      a / b  = start and end pose for the illustration
@@ -152,3 +154,6 @@ window.PLAN = {
   6: { title:'Mobility (optional)', focus:'Rest day or a light mobility flow', items: MOB },
   0: { title:'Mobility (optional)', focus:'Rest day or a light mobility flow', items: MOB }
 };
+
+/* ---- video lengths in seconds (shown on the thumbnails) ---- */
+window.VMETA = {"v01":94,"v02":87,"v03":178,"v04":177,"v05":129,"v06":177,"v07":177,"v08":179,"v09":178,"v10":179,"v11":108,"v12":121,"v13":178,"v14":113,"v15":174,"v16":163,"v17":180,"v18":176,"v20":112,"v21":168,"v22":178,"v23":178,"v24":142,"v25":126,"v26":61,"v27":179,"v29":58,"v30":179,"v31":134,"v32":161,"v33":175,"v34":69,"v35":168};
