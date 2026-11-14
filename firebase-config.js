@@ -6,5 +6,5 @@ window.ALIGNED_FIREBASE = {
  apiKey: "AIzaSyCRidTDgNKyT8JhwFOZHaSeDe53c4A5iqU",
   authDomain: "aligned-eb3b5.firebaseapp.com",
   projectId: "aligned-eb3b5",
-  storageBucket: "aligned-eb3b5.firebasestorage.app",
+  appId: "1:805070661437:web:c2fc6bc10bb896b8140754",
 };
